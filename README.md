@@ -24,7 +24,31 @@ Scan a single file and print to stdout:
 ./bin/phpfuncparser -path ./index.php
 ```
 
+Compare two existing reports and output what was added/changed:
+
+```bash
+./bin/phpfuncparser -diff-old functions_prev.txt -diff-new functions_new.txt -report functions_delta.txt
+```
+
 ## CLI Options
+
+### `-diff-old` / `-diff-new` (diff mode)
+Enables **diff mode**: compares two reports in the text format produced by this tool.
+
+The output contains only the function signatures that exist in the **new** report but are missing from the **old** report.
+
+This catches:
+- brand new functions
+- changed signatures (params modified/added/removed)
+
+Rules:
+- `-diff-old` and `-diff-new` must be provided together
+- `-path` must not be used together with diff mode
+
+Example:
+```bash
+./bin/phpfuncparser -diff-old functions_prev.txt -diff-new functions_new.txt -report functions_delta.txt
+```
 
 ### `-path` (required)
 Path to a **PHP file** or a **directory** to scan.
