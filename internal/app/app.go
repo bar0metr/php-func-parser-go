@@ -38,6 +38,10 @@ func New(cfg config.Config, logger *slog.Logger) *App {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	if a.cfg.DiffOld != "" || a.cfg.DiffNew != "" {
+		return a.runDiff(ctx)
+	}
+
 	if a.logger.Enabled(ctx, slog.LevelDebug) {
 		a.logger.Debug(
 			"starting",
@@ -89,6 +93,95 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	a.logger.Info("report written", "files", len(reports), "output", outputName(a.cfg.Report))
 	return nil
+}
+
+func (a *App) runDiff(ctx context.Context) error {
+	if a.logger.Enabled(ctx, slog.LevelDebug) {
+		a.logger.Debug(
+			"starting diff",
+			"diff_old", a.cfg.DiffOld,
+			"diff_new", a.cfg.DiffNew,
+			"report", outputName(a.cfg.Report),
+		)
+	}
+
+	oldF, err := os.Open(a.cfg.DiffOld)
+	if err != nil {
+		return fmt.Errorf("open diff-old: %w", err)
+	}
+	defer func() { _ = oldF.Close() }()
+	newF, err := os.Open(a.cfg.DiffNew)
+	if err != nil {
+		return fmt.Errorf("open diff-new: %w", err)
+	}
+	defer func() { _ = newF.Close() }()
+
+	oldReports, err := report.ReadText(oldF)
+	if err != nil {
+		return fmt.Errorf("read diff-old report: %w", err)
+	}
+	newReports, err := report.ReadText(newF)
+	if err != nil {
+		return fmt.Errorf("read diff-new report: %w", err)
+	}
+
+	oldIndex := buildSignatureIndex(oldReports)
+	diffReports := diffOnlyNew(newReports, oldIndex)
+
+	out, closeFn, err := a.openOutput(ctx, a.cfg.Report)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	if err := a.writer.Write(out, diffReports); err != nil {
+		return fmt.Errorf("writing diff report: %w", err)
+	}
+	a.logger.Info("diff report written", "files", len(diffReports), "output", outputName(a.cfg.Report))
+	return nil
+}
+
+func buildSignatureIndex(reports []model.FileReport) map[string]map[string]struct{} {
+	idx := make(map[string]map[string]struct{}, len(reports))
+	for _, r := range reports {
+		m := idx[r.Path]
+		if m == nil {
+			m = make(map[string]struct{}, len(r.Functions))
+			idx[r.Path] = m
+		}
+		for _, fn := range r.Functions {
+			m[signatureKey(fn)] = struct{}{}
+		}
+	}
+	return idx
+}
+
+func diffOnlyNew(newReports []model.FileReport, oldIndex map[string]map[string]struct{}) []model.FileReport {
+	var out []model.FileReport
+	for _, r := range newReports {
+		oldSet := oldIndex[r.Path]
+		var keep []model.FunctionDecl
+		for _, fn := range r.Functions {
+			key := signatureKey(fn)
+			if oldSet == nil {
+				keep = append(keep, fn)
+				continue
+			}
+			if _, ok := oldSet[key]; !ok {
+				keep = append(keep, fn)
+			}
+		}
+		if len(keep) == 0 {
+			continue
+		}
+		out = append(out, model.FileReport{Path: r.Path, Functions: keep})
+	}
+	return out
+}
+
+func signatureKey(fn model.FunctionDecl) string {
+	// Exact match on normalized output: name + '(' + params + ')'
+	return fn.Name + "(" + fn.Params + ")"
 }
 
 func (a *App) parseFiles(ctx context.Context, files []string, workers int) ([]model.FileReport, error) {
